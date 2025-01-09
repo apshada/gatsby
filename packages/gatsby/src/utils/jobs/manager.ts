@@ -16,7 +16,7 @@ import {
   IJobNotWhitelisted,
   WorkerError,
 } from "./types"
-import { requireGatsbyPlugin } from "../require-gatsby-plugin"
+import { importGatsbyPlugin } from "../import-gatsby-plugin"
 
 type IncomingMessages = IJobCompletedMessage | IJobFailed | IJobNotWhitelisted
 
@@ -157,30 +157,31 @@ function runJob(
 ): Promise<Record<string, unknown>> {
   const { plugin } = job
   try {
-    const worker = requireGatsbyPlugin(plugin, `gatsby-worker`)
-    if (!worker[job.name]) {
-      throw new Error(`No worker function found for ${job.name}`)
-    }
+    return importGatsbyPlugin(plugin, `gatsby-worker`).then(worker => {
+      if (!worker[job.name]) {
+        throw new Error(`No worker function found for ${job.name}`)
+      }
 
-    if (!forceLocal && !job.plugin.isLocal && hasExternalJobsEnabled()) {
-      if (process.send) {
-        if (!isListeningForMessages) {
-          isListeningForMessages = true
-          listenForJobMessages()
-        }
+      if (!forceLocal && !job.plugin.isLocal && hasExternalJobsEnabled()) {
+        if (process.send) {
+          if (!isListeningForMessages) {
+            isListeningForMessages = true
+            listenForJobMessages()
+          }
 
-        return runExternalWorker(job)
-      } else {
-        // only show the offloading warning once
-        if (!hasShownIPCDisabledWarning) {
-          hasShownIPCDisabledWarning = true
-          reporter.warn(
-            `Offloading of a job failed as IPC could not be detected. Running job locally.`
-          )
+          return runExternalWorker(job)
+        } else {
+          // only show the offloading warning once
+          if (!hasShownIPCDisabledWarning) {
+            hasShownIPCDisabledWarning = true
+            reporter.warn(
+              `Offloading of a job failed as IPC could not be detected. Running job locally.`
+            )
+          }
         }
       }
-    }
-    return runLocalWorker(worker[job.name], job)
+      return runLocalWorker(worker[job.name], job)
+    })
   } catch (err) {
     throw new Error(
       `We couldn't find a gatsby-worker.js(${plugin.resolve}/gatsby-worker.js) file for ${plugin.name}@${plugin.version}`
@@ -248,6 +249,11 @@ export function createInternalJob(
   return internalJob
 }
 
+const activitiesForJobTypes = new Map<
+  string,
+  ReturnType<typeof reporter.createProgress>
+>()
+
 /**
  * Creates a job
  */
@@ -269,6 +275,22 @@ export async function enqueueJob(
   if (!activityForJobs) {
     activityForJobs = reporter.phantomActivity(`Running jobs v2`)
     activityForJobs!.start()
+  }
+
+  const jobType = `${job.plugin.name}.${job.name}`
+
+  let activityForJobsProgress = activitiesForJobTypes.get(jobType)
+
+  if (!activityForJobsProgress) {
+    activityForJobsProgress = reporter.createProgress(
+      `Running ${jobType} jobs`,
+      1,
+      0
+    )
+    activityForJobsProgress.start()
+    activitiesForJobTypes.set(jobType, activityForJobsProgress)
+  } else {
+    activityForJobsProgress.total++
   }
 
   const deferred = pDefer<Record<string, unknown>>()
@@ -296,6 +318,8 @@ export async function enqueueJob(
       // eslint-disable-next-line require-atomic-updates
       activityForJobs = null
     }
+
+    activityForJobsProgress.tick()
   }
 
   return deferred.promise
@@ -320,10 +344,17 @@ export function removeInProgressJob(contentDigest: string): void {
 /**
  * Wait for all processing jobs to have finished
  */
-export function waitUntilAllJobsComplete(): Promise<void> {
-  return hasActiveJobs ? hasActiveJobs.promise : Promise.resolve()
+export async function waitUntilAllJobsComplete(): Promise<void> {
+  await (hasActiveJobs ? hasActiveJobs.promise : Promise.resolve())
+  for (const progressActivity of activitiesForJobTypes.values()) {
+    progressActivity.end()
+  }
+  activitiesForJobTypes.clear()
 }
 
+/**
+ * Wait for specific jobs for engines
+ */
 export async function waitJobs(jobDigests: Set<string>): Promise<void> {
   const promises: Array<Promise<any>> = []
   for (const [digest, job] of jobsInProcess) {

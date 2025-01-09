@@ -2,8 +2,6 @@
 title: Upgrade Your Source Plugins for Gatsby 4
 ---
 
-import { Announcement } from "gatsby-interface"
-
 Gatsby 4 is here! Following on the heels of Gatsby 3, Gatsby 4 further improves build performance and introduces new parallel processing capabilities. In the guide below, we'll walk you through preparing your source plugin for Gatsby 4. You'll find this guide useful if you are a maintainer for a source plugin (as opposed to a consumer using a source plugin in your Gatsby site).
 
 Introducing support for Gatsby 4 in your source plugin can be accomplished by ensuring your code adopts the 4 following changes. Many plugins already had the majority of their code organized the way it needed to be!
@@ -12,7 +10,7 @@ With Gatsby 4, Core APIs are being split into different processes so they're abl
 
 It's time to get into it! The rest of this guide outlines the breaking changes in Gatsby 4 and some quick ways to resolve them. Find something confusing? Let us know in the [GitHub discussion](https://github.com/gatsbyjs/gatsby/discussions/33199) and we'll respond as fast as possible.
 
-<Announcement style={{marginBottom: "1.5rem"}}>
+<Announcement>
 
 **Looking for examples of source plugins that support Gatsby 4?** Check out [`gatsby-source-wordpress`](/plugins/gatsby-source-wordpress/) and [`gatsby-source-shopify`](/plugins/gatsby-source-shopify/).
 
@@ -289,6 +287,49 @@ if (coreSupportsOnPluginInit === "stable") {
   exports.unstable_onPluginInit = initializePlugin // highlight-line
 } else {
   exports.onPreInit = initializePlugin // highlight-line
+}
+```
+
+## 5. Bundling External Files
+
+In order for DSG & SSR to work Gatsby creates bundles with all the contents of the site, plugins, and data. When a plugin (or your own `gatsby-node.js`) requires an external file via `fs` module (e.g. `fs.readFile`) the engine won't be able to include the file. As a result you might see an error (when trying to run DSG) like `ENOENT: no such file or directory` in the CLI.
+
+This limitation applies to these lifecycle APIs: `setFieldsOnGraphQLNodeType`, `createSchemaCustomization`, and `createResolvers`.
+
+Instead you should move the contents to a JS/TS file and import the file as this way the bundler will be able to include the contents.
+
+### The Old Way
+
+Previously you might have required a `.gql` file to use it in one of Gatsby's APIs with the `fs` module:
+
+```javascript:title=gatsby-node.js
+const fs = require("fs")
+const path = require("path")
+
+exports.createSchemaCustomization = ({ actions }) => {
+  const { createTypes } = actions
+  const typeDefs = fs.readFileSync(
+    // .gql file with the SDL
+    path.resolve(__dirname, "schema.gql"),
+    "utf8"
+  )
+
+  createTypes(typeDefs)
+}
+```
+
+### The New Way
+
+You can either move the definitions to a JS/TS file or inline it in `createTypes` directly.
+
+```javascript:title=gatsby-node.js
+// JS file containing the SDL strings now
+const typeDefs = require("./schema")
+
+exports.createSchemaCustomization = ({ actions }) => {
+  const { createTypes } = actions
+
+  createTypes(typeDefs)
 }
 ```
 
